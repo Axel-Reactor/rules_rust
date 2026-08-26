@@ -1886,7 +1886,7 @@ def rustc_compile(
             feature_name = "thin_lto",
         )
     )
-    if distributed_thin_lto and not rust_toolchain._experimental_use_allocator_libraries_with_mangled_symbols_setting:
+    if distributed_thin_lto and not _should_use_rustc_allocator_libraries(attr, rust_toolchain):
         fail(
             (
                 "{}: distributed ThinLTO requires " +
@@ -2502,7 +2502,14 @@ def rustc_compile_action(
 def is_no_std(ctx, toolchain, crate_is_test):
     return not (is_exec_configuration(ctx) or crate_is_test or toolchain._no_std == "off")
 
-def _should_use_rustc_allocator_libraries(toolchain):
+def _should_use_rustc_allocator_libraries(attr, toolchain):
+    if hasattr(attr, "experimental_use_allocator_libraries_with_mangled_symbols"):
+        use_or_default = attr.experimental_use_allocator_libraries_with_mangled_symbols
+        if use_or_default not in [-1, 0, 1]:
+            fail("unexpected per-rule value of experimental_use_allocator_libraries_with_mangled_symbols (should be one of [-1, 0, 1]): " + use_or_default)
+        if use_or_default != -1:
+            return bool(use_or_default)
+
     use_or_default = toolchain._experimental_use_allocator_libraries_with_mangled_symbols
     if use_or_default not in [-1, 0, 1]:
         fail("unexpected value of experimental_use_allocator_libraries_with_mangled_symbols (should be one of [-1, 0, 1]): " + use_or_default)
@@ -2526,7 +2533,7 @@ def _get_std_and_alloc_info(ctx, toolchain, crate_info):
     libs = None
     attr_allocator_library = None
     attr_global_allocator_library = None
-    if _should_use_rustc_allocator_libraries(toolchain) and hasattr(ctx.attr, "allocator_libraries"):
+    if _should_use_rustc_allocator_libraries(ctx.attr, toolchain) and hasattr(ctx.attr, "allocator_libraries"):
         libs = ctx.attr.allocator_libraries[AllocatorLibrariesInfo]
         attr_allocator_library = libs.allocator_library
         attr_global_allocator_library = libs.global_allocator_library

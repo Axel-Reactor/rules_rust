@@ -972,6 +972,17 @@ _COVERAGE_ATTRS = {
 }
 
 _EXPERIMENTAL_USE_CC_COMMON_LINK_ATTRS = {
+    "experimental_use_allocator_libraries_with_mangled_symbols": attr.int(
+        doc = (
+            "Whether to use the allocator_libraries attribute. " +
+            "Possible values: [-1, 0, 1]. " +
+            "-1 means use the toolchain/global setting. " +
+            "0 means ignore allocator_libraries. " +
+            "1 means use allocator_libraries."
+        ),
+        values = [-1, 0, 1],
+        default = -1,
+    ),
     "experimental_use_cc_common_link": attr.int(
         doc = (
             "Whether to use cc_common.link to link rust binaries. " +

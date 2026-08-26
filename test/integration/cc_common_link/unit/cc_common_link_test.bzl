@@ -148,6 +148,29 @@ custom_malloc_test = analysistest.make(
     },
 )
 
+def _allocator_libraries_override_test(ctx):
+    env = analysistest.begin(ctx)
+    registered_actions = analysistest.target_under_test(env)[DepActionsInfo].actions
+    links = [action for action in registered_actions if action.mnemonic == "CppLink"]
+    asserts.equals(env, 1, len(links))
+    cmdline = " ".join(links[0].argv)
+    has_allocator_library = "/ffi/rs/allocator_library/liballocator_library" in cmdline
+    asserts.equals(
+        env,
+        ctx.attr.expect_allocator_library,
+        has_allocator_library,
+        "allocator library presence did not match the per-rule override",
+    )
+    return analysistest.end(env)
+
+allocator_libraries_override_global_off_test = analysistest.make(
+    _allocator_libraries_override_test,
+    attrs = {"expect_allocator_library": attr.bool()},
+    config_settings = {
+        str(Label("@rules_rust//rust/settings:experimental_use_allocator_libraries_with_mangled_symbols")): False,
+    },
+)
+
 def _cc_common_link_test_targets():
     """Generate targets and tests."""
 
@@ -161,6 +184,23 @@ def _cc_common_link_test_targets():
         srcs = ["bin.rs"],
         edition = "2018",
     )
+
+    for target, override in {
+        "allocator_override_enabled": 1,
+        "allocator_override_sibling": -1,
+    }.items():
+        rust_binary(
+            name = target,
+            srcs = ["bin.rs"],
+            allocator_libraries = "@rules_rust//ffi/rs:allocator_libraries_with_mangling_support",
+            edition = "2018",
+            experimental_use_allocator_libraries_with_mangled_symbols = override,
+            experimental_use_cc_common_link = 1,
+        )
+        with_collect_dep_actions(
+            name = target + "_with_collect_dep_actions",
+            target = ":" + target,
+        )
     with_collect_dep_actions(
         name = "bin_with_collect_dep_actions",
         target = ":bin",
@@ -252,6 +292,18 @@ def _cc_common_link_test_targets():
         target_under_test = ":bin_with_cc_common_link",
     )
 
+    allocator_libraries_override_global_off_test(
+        name = "allocator_libraries_per_rule_enable_test",
+        target_under_test = ":allocator_override_enabled_with_collect_dep_actions",
+        expect_allocator_library = True,
+    )
+
+    allocator_libraries_override_global_off_test(
+        name = "allocator_libraries_sibling_unchanged_test",
+        target_under_test = ":allocator_override_sibling_with_collect_dep_actions",
+        expect_allocator_library = False,
+    )
+
     bpf_linker_ignores_cc_args_test(
         name = "bpf_linker_ignores_cc_args_test",
         target_under_test = ":bin_with_collect_dep_actions",
@@ -264,6 +316,8 @@ def _cc_common_link_test_targets():
         "use_cc_common_link_on_crate_test",
         "use_cc_common_link_on_cdylib",
         "custom_malloc_on_binary_test",
+        "allocator_libraries_per_rule_enable_test",
+        "allocator_libraries_sibling_unchanged_test",
         "bpf_linker_ignores_cc_args_test",
     ]
 
