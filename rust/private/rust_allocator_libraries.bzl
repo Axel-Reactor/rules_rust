@@ -248,6 +248,17 @@ def make_libstd_and_allocator_ccinfo(
 # Can't add it directly to RUSTC_ATTRS above, as those are used as
 # aspect parameters and only support simple types ('bool', 'int' or 'string').
 RUSTC_ALLOCATOR_LIBRARIES_ATTRS = {
+    "experimental_use_allocator_libraries_with_mangled_symbols": attr.int(
+        doc = (
+            "Whether to use the allocator_libraries attribute. " +
+            "Possible values: [-1, 0, 1]. " +
+            "-1 means use the toolchain/global setting. " +
+            "0 means ignore allocator_libraries. " +
+            "1 means use allocator_libraries."
+        ),
+        values = [-1, 0, 1],
+        default = -1,
+    ),
     # This is really internal. Not prefixed with `_` since we need to adapt this
     # in bootstrapping situations, e.g., when building the process wrapper
     # or allocator libraries themselves.
