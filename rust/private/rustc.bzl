@@ -2696,11 +2696,15 @@ def rustc_compile(
         if link_std_dylib:
             if rust_toolchain.rust_std_dylib:
                 win_dylibs.append(rust_toolchain.rust_std_dylib)
+        win_dylib_symlinks = []
         for dylib in win_dylibs:
             if dylib.dirname != crate_info.output.dirname:
                 symlink = ctx.actions.declare_file(dylib.basename, sibling = crate_info.output)
                 ctx.actions.symlink(output = symlink, target_file = dylib)
                 outputs.append(symlink)
+                win_dylib_symlinks.append(symlink)
+        # Tests execute inside runfiles, where the DLLs must also sit beside the executable.
+        transitive_runfiles.append(ctx.runfiles(files = win_dylib_symlinks))
 
     if cc_toolchain and crate_info.type in ["dylib", "cdylib"]:
         transitive_runfiles.append(ctx.runfiles(
