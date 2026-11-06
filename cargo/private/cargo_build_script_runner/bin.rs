@@ -114,6 +114,12 @@ fn run_buildrs() -> Result<(), String> {
             let file_name = path
                 .file_name()
                 .ok_or_else(|| "Failed while getting file name".to_string())?;
+            // Published crates exclude .git. Exposing the enclosing workspace's
+            // repository changes build-script behavior (ring regenerates assembly
+            // in its local-development mode instead of using its packaged files).
+            if file_name == ".git" {
+                continue;
+            }
             let link = manifest_dir.join(file_name);
 
             // An entry that already exists belongs to CARGO_MANIFEST_DIR and must not be cleaned.
