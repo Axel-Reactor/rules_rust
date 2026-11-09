@@ -836,6 +836,34 @@ def _depend_on_metadata(crate_info, force_depend_on_objects):
 
     return crate_info.type in ("rlib", "lib")
 
+def _uses_dynamic_cc_runtime(crate_type, dep_info = None, link_std_dylib = False):
+    """Whether a link must use the C++ toolchain's dynamic runtime.
+
+    A process must contain a single C++ runtime. Rust dylibs, including a
+    dynamically linked libstd, link the dynamic runtime, so every link that
+    loads one must use the dynamic runtime too.
+
+    Args:
+        crate_type (str): The crate type being linked.
+        dep_info (DepInfo, optional): The dependencies of the crate.
+        link_std_dylib (bool): Whether the crate links libstd dynamically.
+
+    Returns:
+        bool: True if the dynamic C++ runtime must be linked.
+    """
+    if crate_type in ["dylib", "cdylib"]:
+        return True
+    if crate_type in ["rlib", "lib"]:
+        return False
+    if link_std_dylib:
+        return True
+    if dep_info == None:
+        return False
+    for crate in dep_info.transitive_crates.to_list():
+        if crate.type == "dylib":
+            return True
+    return False
+
 def resolve_cc_runtime_linkage(ctx):
     """Resolve the effective C++ runtime linkage for a target.
 
@@ -844,11 +872,11 @@ def resolve_cc_runtime_linkage(ctx):
     """
     return getattr(ctx.attr, "cc_runtime_linkage", "dynamic")
 
-def get_cc_toolchain_runtime_libs(cc_toolchain, feature_configuration, crate_type, linkage = "dynamic"):
+def get_cc_toolchain_runtime_libs(cc_toolchain, feature_configuration, crate_type, linkage = "dynamic", dep_info = None, link_std_dylib = False):
     if not cc_toolchain:
         return depset()
 
-    if crate_type in ["dylib", "cdylib"] and linkage != "static":
+    if _uses_dynamic_cc_runtime(crate_type, dep_info, link_std_dylib) and linkage != "static":
         # For shared libraries we want to link C++ runtime library dynamically
         # (for example libstdc++.so or libc++.so).
         return cc_toolchain.dynamic_runtime_lib(feature_configuration = feature_configuration)
@@ -983,7 +1011,14 @@ def collect_inputs(
         nolinkstamp_compile_direct_inputs += files.macos_sdkroot
 
     if runtime_libs == None:
-        runtime_libs = get_cc_toolchain_runtime_libs(cc_toolchain, feature_configuration, crate_info.type, resolve_cc_runtime_linkage(ctx))
+        runtime_libs = get_cc_toolchain_runtime_libs(
+            cc_toolchain,
+            feature_configuration,
+            crate_info.type,
+            resolve_cc_runtime_linkage(ctx),
+            dep_info = dep_info,
+            link_std_dylib = toolchain._link_std_dylib or getattr(ctx.attr, "link_std_dylib", False),
+        )
 
     nolinkstamp_compile_inputs = depset(
         nolinkstamp_compile_direct_inputs +
@@ -1550,6 +1585,14 @@ def construct_arguments(
     if toolchain.target_os == "windows" and toolchain.target_abi == "gnu" and toolchain.dlltool:
         rustc_flags.add(toolchain.dlltool, format = "--codegen=dlltool=%s")
 
+    # rustdoc tests compile doctest binaries through rustdoc instead of
+    # rustc. That frontend accepts native libraries as linker args, not
+    # rustc's `-lstatic`/`-ldylib` forms.
+    link_libraries_as_link_args = add_flags_for_binary and include_link_flags and not emit
+    native_link_crate_type = crate_info.type
+    if link_libraries_as_link_args and native_link_crate_type in ["lib", "rlib"]:
+        native_link_crate_type = "bin"
+
     # Link!
     if ("link" in emit and crate_info.type not in ["rlib", "lib"]) or add_flags_for_binary:
         # Rust's built-in linker can handle linking wasm files. We don't want to attempt to use the cc
@@ -1564,7 +1607,7 @@ def construct_arguments(
                     compilation_mode = compilation_mode,
                     toolchain = toolchain,
                 )
-                rpath_runtime_libs = runtime_libs if crate_info.type in ["dylib", "cdylib"] else None
+                rpath_runtime_libs = runtime_libs if _uses_dynamic_cc_runtime(native_link_crate_type, dep_info, link_std_dylib) else None
                 rpaths = _compute_rpaths(
                     toolchain,
                     output_dir,
@@ -1640,14 +1683,6 @@ def construct_arguments(
                 else:
                     rustc_flags.add("--codegen=link-arg=-Wl,-oso_prefix,.")
 
-        # rustdoc tests compile doctest binaries through rustdoc instead of
-        # rustc. That frontend accepts native libraries as linker args, not
-        # rustc's `-lstatic`/`-ldylib` forms.
-        link_libraries_as_link_args = add_flags_for_binary and include_link_flags and not emit
-        native_link_crate_type = crate_info.type
-        if link_libraries_as_link_args and native_link_crate_type in ["lib", "rlib"]:
-            native_link_crate_type = "bin"
-
         _add_native_link_flags(
             rustc_flags,
             dep_info,
@@ -1662,6 +1697,7 @@ def construct_arguments(
             include_link_flags = include_link_flags,
             link_libraries_as_link_args = link_libraries_as_link_args,
             runtime_libs = runtime_libs,
+            link_std_dylib = link_std_dylib,
         )
 
         # On macOS, set the dylib install name to @rpath/<basename> so that
@@ -2178,7 +2214,19 @@ def rustc_compile(
     if use_cc_common_link or distributed_thin_lto or scan_msvc_archive_object:
         output_o = ctx.actions.declare_file(crate_info.output.basename + ".o", sibling = crate_info.output)
 
-    runtime_libs = get_cc_toolchain_runtime_libs(cc_toolchain, feature_configuration, crate_info.type, resolve_cc_runtime_linkage(ctx))
+    if hasattr(attr, "link_std_dylib"):
+        link_std_dylib = rust_toolchain._link_std_dylib or attr.link_std_dylib
+    else:
+        link_std_dylib = rust_toolchain._link_std_dylib
+
+    runtime_libs = get_cc_toolchain_runtime_libs(
+        cc_toolchain,
+        feature_configuration,
+        crate_info.type,
+        resolve_cc_runtime_linkage(ctx),
+        dep_info = dep_info,
+        link_std_dylib = link_std_dylib,
+    )
 
     # Determine if the build is currently running with --stamp
     stamp = is_stamping_enabled(attr)
@@ -2260,11 +2308,6 @@ def rustc_compile(
             fission_directory = fission_directory + "-" + output_hash
         dwo_outputs = ctx.actions.declare_directory(fission_directory, sibling = crate_info.output)
         rust_flags.append(("-Zsplit-dwarf-out-dir=%s", dwo_outputs))
-
-    if hasattr(attr, "link_std_dylib"):
-        link_std_dylib = rust_toolchain._link_std_dylib or attr.link_std_dylib
-    else:
-        link_std_dylib = rust_toolchain._link_std_dylib
 
     # Build the env snapshot used to detect a user-managed RUSTC_BOOTSTRAP before
     # any rules_rust-injected values are added. Matches the merge order in the
@@ -2706,7 +2749,7 @@ def rustc_compile(
         # Tests execute inside runfiles, where the DLLs must also sit beside the executable.
         transitive_runfiles.append(ctx.runfiles(files = win_dylib_symlinks))
 
-    if cc_toolchain and crate_info.type in ["dylib", "cdylib"]:
+    if cc_toolchain and _uses_dynamic_cc_runtime(crate_info.type, dep_info, link_std_dylib):
         transitive_runfiles.append(ctx.runfiles(
             transitive_files = runtime_libs,
         ))
@@ -3681,7 +3724,8 @@ def _add_native_link_flags(
         use_direct_link_driver,
         include_link_flags = True,
         link_libraries_as_link_args = False,
-        runtime_libs = None):
+        runtime_libs = None,
+        link_std_dylib = False):
     """Adds linker flags for all dependencies of the current target.
 
     Args:
@@ -3759,7 +3803,7 @@ def _add_native_link_flags(
         if runtime_libs == None:
             fail("runtime_libs must be provided when linking {}".format(crate_type))
 
-        if crate_type in ["dylib", "cdylib"]:
+        if _uses_dynamic_cc_runtime(crate_type, dep_info, link_std_dylib):
             args.add_all(
                 runtime_libs,
                 map_each = _get_dirname,

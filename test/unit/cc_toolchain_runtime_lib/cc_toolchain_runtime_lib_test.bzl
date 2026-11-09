@@ -7,7 +7,7 @@ load("@rules_cc//cc:cc_toolchain_config_lib.bzl", "feature")
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/toolchains:cc_toolchain_config_info.bzl", "CcToolchainConfigInfo")
-load("//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_shared_library", "rust_static_library")
+load("//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_dylib_library", "rust_library", "rust_shared_library", "rust_static_library")
 
 def _test_cc_config_impl(ctx):
     config_info = cc_common.create_cc_toolchain_config_info(
@@ -77,6 +77,13 @@ def _inputs_analysis_test_impl(ctx):
             "error: expected '{}' to be in inputs: '{}'".format(expected, inputs),
         )
 
+    for unexpected in ctx.attr.unexpected_inputs:
+        asserts.false(
+            env,
+            any([input.path.endswith("/" + unexpected) for input in inputs]),
+            "error: did not expect '{}' in inputs: '{}'".format(unexpected, inputs),
+        )
+
     for expected in ctx.attr.expected_link_arg_inputs:
         asserts.true(
             env,
@@ -117,6 +124,7 @@ inputs_analysis_test = analysistest.make(
         "expected_link_arg_inputs": attr.string_list(),
         "expected_runfiles": attr.string_list(),
         "unexpected_args": attr.string_list(),
+        "unexpected_inputs": attr.string_list(),
     },
 )
 
@@ -140,6 +148,14 @@ def _rustdoc_link_args_analysis_test_impl(ctx):
     )
 
     if action:
+        for expected in ctx.attr.expected_link_arg_inputs:
+            asserts.true(
+                env,
+                any([arg.startswith("-Clink-arg=") and arg.endswith("/" + expected) for arg in action.argv]),
+                "error: expected '{}' to be linked via -Clink-arg: '{}'".format(expected, action.argv),
+            )
+
+    if action and ctx.attr.expected_any_of:
         # Any one of the accepted spellings is enough: `rustdoc.bzl` omits the
         # `-l` prefix when the target ABI is msvc, where link.exe takes bare
         # library names.
@@ -166,6 +182,7 @@ rustdoc_link_args_analysis_test = analysistest.make(
     """,
     attrs = {
         "expected_any_of": attr.string_list(),
+        "expected_link_arg_inputs": attr.string_list(),
     },
 )
 
@@ -229,6 +246,114 @@ def runtime_libs_test(name):
         unexpected_args = select({
             "@platforms//os:windows": [],
             "//conditions:default": ["-ldylib=dummy"],
+        }),
+    )
+
+    # A binary that links a Rust ABI dylib must share the dylib's dynamic C++
+    # runtime instead of embedding a second, static copy.
+    rust_dylib_library(
+        name = "%s/__dylib_dep" % name,
+        edition = "2018",
+        srcs = ["lib.rs"],
+        tags = ["manual", "nobuild"],
+    )
+
+    rust_binary(
+        name = "%s/__binary_with_dylib_dep" % name,
+        edition = "2018",
+        srcs = ["main.rs"],
+        link_std_dylib = True,
+        deps = [":%s/__dylib_dep" % name],
+        tags = ["manual", "nobuild"],
+    )
+
+    with_extra_toolchain(
+        name = "%s/_binary_with_dylib_dep" % name,
+        extra_toolchain = ":%s/test_cc_toolchain" % name,
+        target = "%s/__binary_with_dylib_dep" % name,
+        tags = ["manual"],
+    )
+
+    inputs_analysis_test(
+        name = "%s/binary_with_dylib_dep" % name,
+        target_under_test = "%s/_binary_with_dylib_dep" % name,
+        expected_inputs = ["dummy.so"],
+        expected_link_arg_inputs = select({
+            "@platforms//os:windows": [],
+            "//conditions:default": ["dummy.so"],
+        }),
+        expected_runfiles = ["dummy.so"],
+        unexpected_inputs = ["dummy.a"],
+        target_compatible_with = select({
+            "@platforms//os:linux": [],
+            "@platforms//os:macos": [],
+            "//conditions:default": ["@platforms//:incompatible"],
+        }),
+    )
+
+    # Linking libstd dynamically loads a Rust dylib too, even without any
+    # dylib crates in the dependency graph.
+    rust_binary(
+        name = "%s/__binary_with_std_dylib" % name,
+        edition = "2018",
+        srcs = ["main.rs"],
+        link_std_dylib = True,
+        tags = ["manual", "nobuild"],
+    )
+
+    with_extra_toolchain(
+        name = "%s/_binary_with_std_dylib" % name,
+        extra_toolchain = ":%s/test_cc_toolchain" % name,
+        target = "%s/__binary_with_std_dylib" % name,
+        tags = ["manual"],
+    )
+
+    inputs_analysis_test(
+        name = "%s/binary_with_std_dylib" % name,
+        target_under_test = "%s/_binary_with_std_dylib" % name,
+        expected_inputs = ["dummy.so"],
+        expected_link_arg_inputs = ["dummy.so"],
+        expected_runfiles = ["dummy.so"],
+        unexpected_inputs = ["dummy.a"],
+        target_compatible_with = select({
+            "@platforms//os:linux": [],
+            "@platforms//os:macos": [],
+            "//conditions:default": ["@platforms//:incompatible"],
+        }),
+    )
+
+    # Doctests of a crate that depends on a Rust dylib link like a binary
+    # that depends on it.
+    rust_library(
+        name = "%s/__doctest_library_with_dylib_dep" % name,
+        edition = "2018",
+        srcs = ["lib.rs"],
+        deps = [":%s/__dylib_dep" % name],
+        tags = ["manual", "nobuild"],
+    )
+
+    rust_doc_test(
+        name = "%s/__doc_test_with_dylib_dep" % name,
+        crate = ":%s/__doctest_library_with_dylib_dep" % name,
+        tags = ["manual", "nobuild"],
+    )
+
+    with_extra_toolchain(
+        name = "%s/_doc_test_with_dylib_dep" % name,
+        extra_toolchain = ":%s/test_cc_toolchain" % name,
+        target = "%s/__doc_test_with_dylib_dep" % name,
+        tags = ["manual"],
+        testonly = True,
+    )
+
+    rustdoc_link_args_analysis_test(
+        name = "%s/doc_test_with_dylib_dep" % name,
+        target_under_test = "%s/_doc_test_with_dylib_dep" % name,
+        expected_link_arg_inputs = ["dummy.so"],
+        target_compatible_with = select({
+            "@platforms//os:linux": [],
+            "@platforms//os:macos": [],
+            "//conditions:default": ["@platforms//:incompatible"],
         }),
     )
 

@@ -109,12 +109,19 @@ def rustdoc_compile_action(
         html_input_files.extend(ctx.files.markdown_css)
 
     cc_toolchain, feature_configuration = find_cc_toolchain(ctx)
-    runtime_libs = get_cc_toolchain_runtime_libs(cc_toolchain, feature_configuration, crate_info.type)
-
     dep_info, build_info, _ = collect_deps(
         deps = crate_info.deps.to_list(),
         proc_macro_deps = crate_info.proc_macro_deps.to_list(),
         aliases = crate_info.aliases,
+    )
+
+    # Doctests link as binaries, so they pick the C++ runtime a binary would.
+    runtime_libs = get_cc_toolchain_runtime_libs(
+        cc_toolchain,
+        feature_configuration,
+        "bin" if is_test and crate_info.type in ["lib", "rlib"] else crate_info.type,
+        dep_info = dep_info,
+        link_std_dylib = toolchain._link_std_dylib or getattr(ctx.attr, "link_std_dylib", False),
     )
 
     compile_inputs, out_dir, build_env_files, build_flags_files, linkstamp_outs, ambiguous_libs = collect_inputs(
