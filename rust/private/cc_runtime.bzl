@@ -18,18 +18,16 @@ CC_RUNTIME_LINKAGE_ATTRS = {
     "cc_runtime_linkage": attr.string(
         doc = """Selects the C++ toolchain runtime libraries supplied to this link.
 
-- `auto` (default): follow the effective Rust standard-library linkage selected
-  by `link_std_dylib` or the toolchain's `experimental_link_std_dylib` setting.
-  Prefer the dynamic runtime for dynamic Rust std, otherwise the static runtime.
-  If the toolchain supplies only a static runtime, auto falls back to it.
+- `auto` (default): follow Rust std linkage (`link_std_dylib` or the toolchain's
+  `experimental_link_std_dylib` setting), falling back to static if that is all
+  the toolchain supplies.
 - `static`: select the toolchain's static runtime libraries.
-- `dynamic`: select the toolchain's dynamic runtime libraries. Fail if the
-  toolchain supplies only a static runtime instead of silently changing linkage.
+- `dynamic`: select the toolchain's dynamic runtime libraries; fail if only
+  a static runtime is supplied.
 
-This selects the toolchain runtime, not ordinary native dependency linkage.
-Toolchains that supply no runtime libraries remain supported. It does not
-control runtimes already linked into dependencies or guarantee that only one
-runtime is loaded in the process. Use `select()` to vary the policy by platform.
+Toolchains with no runtime libraries rely on their linker configuration.
+Use `select()` for platform-specific policies. See [C++ runtime linkage](rust.md#c-runtime-linkage)
+for defaults and scope.
 """,
         values = ["auto", "dynamic", "static"],
         default = "auto",

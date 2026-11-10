@@ -115,6 +115,14 @@ def _inputs_analysis_test_impl(ctx):
             "error: did not expect '{}' in args: '{}'".format(unexpected, action.argv),
         )
 
+    if ctx.attr.expected_any_of:
+        # MSVC accepts bare library names; other linkers use the -l prefix.
+        asserts.true(
+            env,
+            any([expected in action.argv for expected in ctx.attr.expected_any_of]),
+            "error: expected one of {} in args: '{}'".format(ctx.attr.expected_any_of, action.argv),
+        )
+
     runfiles = tut[DepActionsInfo].runfiles
     for expected in ctx.attr.expected_runfiles:
         asserts.true(
@@ -143,6 +151,7 @@ _INPUTS_ANALYSIS_TEST_ATTRS = {
     "mnemonic": attr.string(default = "Rustc"),
     "expected_inputs": attr.string_list(),
     "expected_args": attr.string_list(),
+    "expected_any_of": attr.string_list(),
     "expected_link_arg_inputs": attr.string_list(),
     "expected_link_inputs": attr.string_list(),
     "expected_runfiles": attr.string_list(),
@@ -164,62 +173,9 @@ global_std_inputs_analysis_test = analysistest.make(
     config_settings = {str(Label("//rust/settings:experimental_link_std_dylib")): True},
 )
 
-def _rustdoc_link_args_analysis_test_impl(ctx):
-    env = analysistest.begin(ctx)
-    tut = analysistest.target_under_test(env)
-
-    actions = tut[DepActionsInfo].actions
-    action = None
-    for candidate in actions:
-        if candidate.mnemonic == "RustdocTest":
-            action = candidate
-            break
-
-    asserts.true(
-        env,
-        action != None,
-        "error: no rustdoc test action found among: {}".format(
-            [candidate.mnemonic for candidate in actions],
-        ),
-    )
-
-    if action:
-        for expected in ctx.attr.expected_link_arg_inputs:
-            asserts.true(
-                env,
-                any([arg.startswith("-Clink-arg=") and arg.endswith("/" + expected) for arg in action.argv]),
-                "error: expected '{}' to be linked via -Clink-arg: '{}'".format(expected, action.argv),
-            )
-
-    if action and ctx.attr.expected_any_of:
-        # Any one of the accepted spellings is enough: `rustdoc.bzl` omits the
-        # `-l` prefix when the target ABI is msvc, where link.exe takes bare
-        # library names.
-        asserts.true(
-            env,
-            any([expected in action.argv for expected in ctx.attr.expected_any_of]),
-            "error: expected one of {} in the rustdoc test link args: '{}'".format(
-                ctx.attr.expected_any_of,
-                action.argv,
-            ),
-        )
-
-    return analysistest.end(env)
-
 rustdoc_link_args_analysis_test = analysistest.make(
-    impl = _rustdoc_link_args_analysis_test_impl,
-    doc = """An analysistest to examine the link args of a rust_doc_test target.
-
-    rustdoc drives the doc test link itself rather than running a Bazel C++
-    link action, so the cc_toolchain's runtime libs never arrive through
-    `static_link_cpp_runtimes` the way they do for a rust_library. They have to
-    be named explicitly on the rustdoc command line instead, or the doc test
-    fails to link against a toolchain that supplies its own unwinder.
-    """,
-    attrs = {
-        "expected_any_of": attr.string_list(),
-        "expected_link_arg_inputs": attr.string_list(),
-    },
+    impl = _inputs_analysis_test_impl,
+    attrs = _INPUTS_ANALYSIS_TEST_ATTRS | {"mnemonic": attr.string(default = "RustdocTest")},
 )
 
 def _dynamic_runtime_unavailable_test_impl(ctx):
@@ -239,49 +195,40 @@ def runtime_libs_test(name):
       name: The name of the test target.
     """
 
+    dylib_platforms = select({
+        "@platforms//os:linux": [],
+        "@platforms//os:macos": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    })
+
     test_cc_config(
         name = "%s/cc_toolchain_config" % name,
     )
-    cc_toolchain(
-        name = "%s/test_cc_toolchain_impl" % name,
-        all_files = ":empty",
-        compiler_files = ":empty",
-        dwp_files = ":empty",
-        linker_files = ":empty",
-        objcopy_files = ":empty",
-        strip_files = ":empty",
-        supports_param_files = 0,
-        toolchain_config = ":%s/cc_toolchain_config" % name,
-        toolchain_identifier = "dummy_wasm32_cc",
-        static_runtime_lib = ":dummy.a",
-        dynamic_runtime_lib = ":dummy.so",
-    )
-    native.toolchain(
-        name = "%s/test_cc_toolchain" % name,
-        toolchain = ":%s/test_cc_toolchain_impl" % name,
-        toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
-    )
-
-    cc_toolchain(
-        name = "%s/static_only_cc_toolchain_impl" % name,
-        all_files = ":empty",
-        compiler_files = ":empty",
-        dwp_files = ":empty",
-        linker_files = ":empty",
-        objcopy_files = ":empty",
-        strip_files = ":empty",
-        supports_param_files = 0,
-        toolchain_config = ":%s/cc_toolchain_config" % name,
-        toolchain_identifier = "static_only_cc",
-        static_runtime_lib = ":dummy.a",
-        dynamic_runtime_lib = ":empty_runtime",
-    )
     native.filegroup(name = "empty_runtime", srcs = [])
-    native.toolchain(
-        name = "%s/static_only_cc_toolchain" % name,
-        toolchain = ":%s/static_only_cc_toolchain_impl" % name,
-        toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
-    )
+    for suffix, identifier, static_runtime, dynamic_runtime in [
+        ("test", "dummy_wasm32_cc", ":dummy.a", ":dummy.so"),
+        ("static_only", "static_only_cc", ":dummy.a", ":empty_runtime"),
+        ("no_runtime", "no_runtime_cc", ":empty_runtime", ":empty_runtime"),
+    ]:
+        cc_toolchain(
+            name = "%s/%s_cc_toolchain_impl" % (name, suffix),
+            all_files = ":empty",
+            compiler_files = ":empty",
+            dwp_files = ":empty",
+            linker_files = ":empty",
+            objcopy_files = ":empty",
+            strip_files = ":empty",
+            supports_param_files = 0,
+            toolchain_config = ":%s/cc_toolchain_config" % name,
+            toolchain_identifier = identifier,
+            static_runtime_lib = static_runtime,
+            dynamic_runtime_lib = dynamic_runtime,
+        )
+        native.toolchain(
+            name = "%s/%s_cc_toolchain" % (name, suffix),
+            toolchain = ":%s/%s_cc_toolchain_impl" % (name, suffix),
+            toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+        )
 
     rust_shared_library(
         name = "%s/__shared_library" % name,
@@ -351,11 +298,7 @@ def runtime_libs_test(name):
         }),
         expected_runfiles = ["dummy.so"],
         unexpected_inputs = ["dummy.a"],
-        target_compatible_with = select({
-            "@platforms//os:linux": [],
-            "@platforms//os:macos": [],
-            "//conditions:default": ["@platforms//:incompatible"],
-        }),
+        target_compatible_with = dylib_platforms,
     )
 
     # The default follows Rust std even without dylib crate dependencies.
@@ -381,11 +324,7 @@ def runtime_libs_test(name):
         expected_link_arg_inputs = ["dummy.so"],
         expected_runfiles = ["dummy.so"],
         unexpected_inputs = ["dummy.a"],
-        target_compatible_with = select({
-            "@platforms//os:linux": [],
-            "@platforms//os:macos": [],
-            "//conditions:default": ["@platforms//:incompatible"],
-        }),
+        target_compatible_with = dylib_platforms,
     )
 
     # Dependency crate types do not override the configured Rust std policy.
@@ -417,11 +356,7 @@ def runtime_libs_test(name):
         # The dylib still needs its own dynamic runtime deployed.
         expected_runfiles = ["dummy.so"],
         unexpected_inputs = ["dummy.so"],
-        target_compatible_with = select({
-            "@platforms//os:linux": [],
-            "@platforms//os:macos": [],
-            "//conditions:default": ["@platforms//:incompatible"],
-        }),
+        target_compatible_with = dylib_platforms,
     )
 
     # Supply both forms of an ordinary native dependency. Selecting a dynamic
@@ -467,11 +402,7 @@ def runtime_libs_test(name):
             expected_solib_runfile_prefixes = ["libstd-"],
             unexpected_inputs = ["libnative.so"] + (["dummy.a"] if dynamic else ["dummy.so"]),
             unexpected_runfiles = [] if dynamic else ["dummy.a", "dummy.so"],
-            target_compatible_with = select({
-                "@platforms//os:linux": [],
-                "@platforms//os:macos": [],
-                "//conditions:default": ["@platforms//:incompatible"],
-            }),
+            target_compatible_with = dylib_platforms,
         )
 
     with_extra_toolchain(
@@ -554,11 +485,7 @@ def runtime_libs_test(name):
         name = "%s/doc_test_with_dylib_dep" % name,
         target_under_test = "%s/_doc_test_with_dylib_dep" % name,
         expected_link_arg_inputs = ["dummy.so"],
-        target_compatible_with = select({
-            "@platforms//os:linux": [],
-            "@platforms//os:macos": [],
-            "//conditions:default": ["@platforms//:incompatible"],
-        }),
+        target_compatible_with = dylib_platforms,
     )
 
     with_extra_toolchain(
@@ -660,11 +587,7 @@ def runtime_libs_test(name):
                     expected_runfiles = ["dummy.so"] if dynamic else [],
                     unexpected_inputs = ["libnative.so", "dummy.a" if dynamic else "dummy.so"],
                     unexpected_runfiles = [] if dynamic else ["dummy.so"],
-                    target_compatible_with = select({
-                        "@platforms//os:linux": [],
-                        "@platforms//os:macos": [],
-                        "//conditions:default": ["@platforms//:incompatible"],
-                    }),
+                    target_compatible_with = dylib_platforms,
                 )
 
     # A shared output alone does not imply a dynamic Rust standard library.
@@ -735,34 +658,11 @@ def runtime_libs_test(name):
             expected_inputs = ["dummy.so" if dynamic else "dummy.a"],
             expected_runfiles = ["dummy.so"] if dynamic else [],
             unexpected_inputs = ["dummy.a" if dynamic else "dummy.so"],
-            target_compatible_with = select({
-                "@platforms//os:linux": [],
-                "@platforms//os:macos": [],
-                "//conditions:default": ["@platforms//:incompatible"],
-            }),
+            target_compatible_with = dylib_platforms,
         )
 
     # An empty explicit runtime set can mean the toolchain configures the
     # runtime through linker flags. Even an explicit dynamic policy permits it.
-    cc_toolchain(
-        name = "%s/no_runtime_cc_toolchain_impl" % name,
-        all_files = ":empty",
-        compiler_files = ":empty",
-        dwp_files = ":empty",
-        linker_files = ":empty",
-        objcopy_files = ":empty",
-        strip_files = ":empty",
-        supports_param_files = 0,
-        toolchain_config = ":%s/cc_toolchain_config" % name,
-        toolchain_identifier = "no_runtime_cc",
-        static_runtime_lib = ":empty_runtime",
-        dynamic_runtime_lib = ":empty_runtime",
-    )
-    native.toolchain(
-        name = "%s/no_runtime_cc_toolchain" % name,
-        toolchain = ":%s/no_runtime_cc_toolchain_impl" % name,
-        toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
-    )
     with_extra_toolchain(
         name = "%s/_no_runtime" % name,
         extra_toolchain = ":%s/no_runtime_cc_toolchain" % name,

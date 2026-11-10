@@ -34,25 +34,22 @@ directly to the crate types Cargo produces.
 
 ## C++ runtime linkage
 
-Rust link rules expose `cc_runtime_linkage = "auto" | "static" | "dynamic"`.
-The default, `auto`, follows the **configured Rust standard-library linkage**
-for the current link:
+`cc_runtime_linkage` selects the C++ toolchain runtime for binaries, tests,
+Rust and C ABI shared libraries, procedural macros, and doctests:
 
-| Rust std selection | C++ toolchain runtime in `auto` |
+| Setting | C++ toolchain runtime |
 | --- | --- |
-| Static (the default for binaries and tests) | Static |
-| Dynamic (`link_std_dylib = True` or the toolchain setting) | Dynamic, falling back to static if that is all the toolchain supplies |
+| `auto` (default) | Follows Rust std linkage; falls back to static if only a static runtime is supplied |
+| `static` | Static |
+| `dynamic` | Dynamic; fails if only a static runtime is supplied |
 
-Use `link_std_dylib = True` on binaries, tests, Rust ABI dylibs, or doctests to
-select dynamic Rust std and default to a dynamic C++ runtime together. For a
-build-wide default, use
-`--@rules_rust//rust/settings:experimental_link_std_dylib=true`. The effective
-Rust std setting is the target flag OR the toolchain setting; a target's `False`
-does not override a build-wide `True`. Arbitrary `rustc_flags` are not interpreted
-as linkage policy.
+Rust std is dynamic when `link_std_dylib = True` or
+`--@rules_rust//rust/settings:experimental_link_std_dylib=true`; a target's `False`
+does not override the build-wide setting. Rust ABI dylibs default to dynamic std;
+binaries, tests, C ABI shared libraries, procedural macros, and doctests default
+to static std. Arbitrary `rustc_flags` do not determine this policy.
 
-Set `cc_runtime_linkage` explicitly when the C++ runtime needs a different
-policy. For example:
+Use an explicit setting to choose the C++ runtime independently of Rust std:
 
 ```python
 rust_binary(
@@ -63,31 +60,18 @@ rust_binary(
 )
 ```
 
-The attribute also accepts `select()` for platform-specific policies. An explicit
-`dynamic` request fails when the toolchain supplies only static runtime libraries;
-use `auto` to allow that fallback. A toolchain with no explicit runtime libraries
-continues to rely on its own linker configuration.
+The attribute accepts `select()` for platform-specific policies. Toolchains with
+no explicit runtime libraries rely on their linker configuration.
 
-This policy applies to binaries, tests, Rust and C ABI shared libraries,
-procedural macros, and doctests. Archives retain static runtime inputs; their
-consumers select the final link policy. Doctests select their own policy rather
-than inheriting attributes from the documented target. A Rust dylib dependency
-does not by itself change the consumer's selection: configure each final link.
+Configure each final link: dependency crate types do not determine the consumer's
+policy, and doctests use their own attributes. Archives retain static runtime
+inputs; their consumers select the final link policy.
 
-**Default change for shared libraries:** `rust_cdylib_library` (and its
-`rust_shared_library` alias) previously selected a dynamic C++ runtime regardless
-of Rust std linkage. With `auto`, static Rust std selects a static C++ runtime.
-Use `cc_runtime_linkage = "dynamic"` to retain the previous selection. Rust ABI
-dylibs default to dynamic Rust std, so their default C++ selection stays dynamic.
-
-The guarantee is limited to selecting the runtime libraries supplied by the C++
-toolchain. Ordinary native dependencies keep their existing linkage policy.
-Selection does not inspect symbols to determine whether the program needs a
-C++ runtime; supplying dynamic runtime libraries can add loader dependencies even
-for pure Rust code. It does not change runtimes embedded in prebuilt dependencies,
-control libraries loaded at runtime, or guarantee one C++ runtime or unwinder per
-process. Projects remain responsible for choosing compatible Rust and C++
-toolchains and deploying any required shared libraries.
+This setting only selects toolchain runtime libraries. It does not inspect symbol
+usage, change ordinary native dependency linkage, or guarantee a single runtime
+or unwinder per process. Dynamic selection can add shared-library dependencies
+even for pure Rust code. Choose compatible toolchains and deploy the required
+shared libraries, including those needed by prebuilt or runtime-loaded code.
 
 ## Additional rules
 

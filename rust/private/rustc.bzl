@@ -1577,14 +1577,6 @@ def construct_arguments(
     if toolchain.target_os == "windows" and toolchain.target_abi == "gnu" and toolchain.dlltool:
         rustc_flags.add(toolchain.dlltool, format = "--codegen=dlltool=%s")
 
-    # rustdoc tests compile doctest binaries through rustdoc instead of
-    # rustc. That frontend accepts native libraries as linker args, not
-    # rustc's `-lstatic`/`-ldylib` forms.
-    link_libraries_as_link_args = add_flags_for_binary and include_link_flags and not emit
-    native_link_crate_type = crate_info.type
-    if link_libraries_as_link_args and native_link_crate_type in ["lib", "rlib"]:
-        native_link_crate_type = "bin"
-
     # Link!
     if ("link" in emit and crate_info.type not in ["rlib", "lib"]) or add_flags_for_binary:
         # Rust's built-in linker can handle linking wasm files. We don't want to attempt to use the cc
@@ -1674,6 +1666,14 @@ def construct_arguments(
                     rustc_flags.add("--codegen=link-arg=.")
                 else:
                     rustc_flags.add("--codegen=link-arg=-Wl,-oso_prefix,.")
+
+        # rustdoc tests compile doctest binaries through rustdoc instead of
+        # rustc. That frontend accepts native libraries as linker args, not
+        # rustc's `-lstatic`/`-ldylib` forms.
+        link_libraries_as_link_args = add_flags_for_binary and include_link_flags and not emit
+        native_link_crate_type = crate_info.type
+        if link_libraries_as_link_args and native_link_crate_type in ["lib", "rlib"]:
+            native_link_crate_type = "bin"
 
         _add_native_link_flags(
             rustc_flags,
@@ -2206,10 +2206,7 @@ def rustc_compile(
     if use_cc_common_link or distributed_thin_lto or scan_msvc_archive_object:
         output_o = ctx.actions.declare_file(crate_info.output.basename + ".o", sibling = crate_info.output)
 
-    if hasattr(attr, "link_std_dylib"):
-        link_std_dylib = rust_toolchain._link_std_dylib or attr.link_std_dylib
-    else:
-        link_std_dylib = rust_toolchain._link_std_dylib
+    link_std_dylib = rust_toolchain._link_std_dylib or getattr(attr, "link_std_dylib", False)
 
     cc_runtime = get_cc_toolchain_runtime(
         cc_toolchain,
