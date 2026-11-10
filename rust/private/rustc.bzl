@@ -836,56 +836,23 @@ def _depend_on_metadata(crate_info, force_depend_on_objects):
 
     return crate_info.type in ("rlib", "lib")
 
-def _uses_dynamic_cc_runtime(crate_type, dep_info = None, link_std_dylib = False):
-    """Whether a link should use the C++ toolchain's dynamic runtime.
-
-    Rust dylibs use the dynamic runtime. Sharing it with their consumers avoids
-    embedding a second C++ runtime in the executable. The selection below falls
-    back to static linkage for toolchains without a dynamic runtime.
-
-    Args:
-        crate_type (str): The crate type being linked.
-        dep_info (DepInfo, optional): The dependencies of the crate.
-        link_std_dylib (bool): Whether the crate links libstd dynamically.
-
-    Returns:
-        bool: True if the dynamic C++ runtime must be linked.
-    """
-    if crate_type in ["dylib", "cdylib"]:
-        return True
-    if crate_type in ["rlib", "lib"]:
-        return False
-    if link_std_dylib:
-        return True
-    if dep_info == None:
-        return False
-    for crate in dep_info.transitive_crates.to_list():
-        if crate.type == "dylib":
-            return True
-    return False
-
 def resolve_cc_runtime_linkage(ctx):
-    """Resolve the effective C++ runtime linkage for a target.
+    """Return the target's C++ runtime policy, defaulting to Rust std linkage."""
+    return getattr(ctx.attr, "cc_runtime_linkage", "auto")
 
-    Driven by the per-target `cc_runtime_linkage` attribute, which only exists on
-    shared-library rules; other rules default to "dynamic" via the getattr default.
-    """
-    return getattr(ctx.attr, "cc_runtime_linkage", "dynamic")
+def get_cc_toolchain_runtime(cc_toolchain, feature_configuration, crate_type, linkage = "auto", link_std_dylib = False):
+    """Select toolchain runtime libraries and report their effective linkage.
 
-def get_cc_toolchain_runtime(cc_toolchain, feature_configuration, crate_type, linkage = "dynamic", dep_info = None, link_std_dylib = False):
-    """Select runtime libraries and their effective linkage.
-
-    Some toolchains (including LLVM on Windows) only provide a static runtime.
-    Preserve that runtime when dynamic linkage is requested but unavailable.
-    Callers must use the effective linkage for flags, rpaths, and runfiles too.
+    Auto follows the configured Rust std linkage at final links. Archives retain
+    static runtime inputs; their consumers choose the final link policy. This
+    does not infer runtime requirements from dependency crate types.
 
     Args:
         cc_toolchain: The C++ toolchain, or None.
         feature_configuration: The toolchain's configured features.
         crate_type: The type of the crate being linked.
-        linkage: The target's C++ runtime linkage override.
-        dep_info: Rust dependency information for the link.
-        link_std_dylib: Whether libstd is dynamically linked.
+        linkage: The target's auto, static, or dynamic C++ runtime policy.
+        link_std_dylib: The effective Rust std linkage setting for this link.
 
     Returns:
         struct: The selected `libraries` depset and `is_dynamic` boolean.
@@ -893,18 +860,22 @@ def get_cc_toolchain_runtime(cc_toolchain, feature_configuration, crate_type, li
     if not cc_toolchain:
         return struct(libraries = depset(), is_dynamic = False)
 
-    if _uses_dynamic_cc_runtime(crate_type, dep_info, link_std_dylib) and linkage != "static":
+    use_dynamic = linkage == "dynamic" or (
+        linkage == "auto" and link_std_dylib and crate_type not in ["rlib", "lib", "staticlib"]
+    )
+    if use_dynamic:
         libraries = cc_toolchain.dynamic_runtime_lib(feature_configuration = feature_configuration)
         if libraries.to_list():
             return struct(libraries = libraries, is_dynamic = True)
 
-    return struct(
-        libraries = cc_toolchain.static_runtime_lib(feature_configuration = feature_configuration),
-        is_dynamic = False,
-    )
+    libraries = cc_toolchain.static_runtime_lib(feature_configuration = feature_configuration)
+    if linkage == "dynamic" and libraries.to_list():
+        fail("cc_runtime_linkage = 'dynamic' requested, but the C++ toolchain supplies only a static runtime; use 'auto' to allow fallback or 'static' to select it explicitly")
 
-def get_cc_toolchain_runtime_libs(cc_toolchain, feature_configuration, crate_type, linkage = "dynamic", dep_info = None, link_std_dylib = False):
-    return get_cc_toolchain_runtime(cc_toolchain, feature_configuration, crate_type, linkage, dep_info, link_std_dylib).libraries
+    return struct(libraries = libraries, is_dynamic = False)
+
+def get_cc_toolchain_runtime_libs(cc_toolchain, feature_configuration, crate_type, linkage = "auto", link_std_dylib = False):
+    return get_cc_toolchain_runtime(cc_toolchain, feature_configuration, crate_type, linkage, link_std_dylib).libraries
 
 def collect_inputs(
         ctx,
@@ -1036,7 +1007,6 @@ def collect_inputs(
             feature_configuration,
             crate_info.type,
             resolve_cc_runtime_linkage(ctx),
-            dep_info = dep_info,
             link_std_dylib = toolchain._link_std_dylib or getattr(ctx.attr, "link_std_dylib", False),
         )
 
@@ -2246,7 +2216,6 @@ def rustc_compile(
         feature_configuration,
         crate_info.type,
         resolve_cc_runtime_linkage(ctx),
-        dep_info = dep_info,
         link_std_dylib = link_std_dylib,
     )
     runtime_libs = cc_runtime.libraries

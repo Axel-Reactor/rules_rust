@@ -32,6 +32,63 @@ directly to the crate types Cargo produces.
   `rust_library`/`rust_binary` (via `crate = ...`) to run its inline `#[test]`s,
   or compile a standalone test binary from its own `srcs`.
 
+## C++ runtime linkage
+
+Rust link rules expose `cc_runtime_linkage = "auto" | "static" | "dynamic"`.
+The default, `auto`, follows the **configured Rust standard-library linkage**
+for the current link:
+
+| Rust std selection | C++ toolchain runtime in `auto` |
+| --- | --- |
+| Static (the default for binaries and tests) | Static |
+| Dynamic (`link_std_dylib = True` or the toolchain setting) | Dynamic, falling back to static if that is all the toolchain supplies |
+
+Use `link_std_dylib = True` on binaries, tests, Rust ABI dylibs, or doctests to
+select dynamic Rust std and default to a dynamic C++ runtime together. For a
+build-wide default, use
+`--@rules_rust//rust/settings:experimental_link_std_dylib=true`. The effective
+Rust std setting is the target flag OR the toolchain setting; a target's `False`
+does not override a build-wide `True`. Arbitrary `rustc_flags` are not interpreted
+as linkage policy.
+
+Set `cc_runtime_linkage` explicitly when the C++ runtime needs a different
+policy. For example:
+
+```python
+rust_binary(
+    name = "app",
+    srcs = ["main.rs"],
+    link_std_dylib = True,
+    cc_runtime_linkage = "static",  # Override only the C++ runtime selection.
+)
+```
+
+The attribute also accepts `select()` for platform-specific policies. An explicit
+`dynamic` request fails when the toolchain supplies only static runtime libraries;
+use `auto` to allow that fallback. A toolchain with no explicit runtime libraries
+continues to rely on its own linker configuration.
+
+This policy applies to binaries, tests, Rust and C ABI shared libraries,
+procedural macros, and doctests. Archives retain static runtime inputs; their
+consumers select the final link policy. Doctests select their own policy rather
+than inheriting attributes from the documented target. A Rust dylib dependency
+does not by itself change the consumer's selection: configure each final link.
+
+**Default change for shared libraries:** `rust_cdylib_library` (and its
+`rust_shared_library` alias) previously selected a dynamic C++ runtime regardless
+of Rust std linkage. With `auto`, static Rust std selects a static C++ runtime.
+Use `cc_runtime_linkage = "dynamic"` to retain the previous selection. Rust ABI
+dylibs default to dynamic Rust std, so their default C++ selection stays dynamic.
+
+The guarantee is limited to selecting the runtime libraries supplied by the C++
+toolchain. Ordinary native dependencies keep their existing linkage policy.
+Selection does not inspect symbols to determine whether the program needs a
+C++ runtime; supplying dynamic runtime libraries can add loader dependencies even
+for pure Rust code. It does not change runtimes embedded in prebuilt dependencies,
+control libraries loaded at runtime, or guarantee one C++ runtime or unwinder per
+process. Projects remain responsible for choosing compatible Rust and C++
+toolchains and deploying any required shared libraries.
+
 ## Additional rules
 
 Non-core rules that ship in the same ruleset:
